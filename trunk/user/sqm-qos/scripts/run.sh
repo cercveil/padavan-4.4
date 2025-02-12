@@ -37,6 +37,7 @@ fi
 iwpriv ra0 set hw_nat_register=1
 iwpriv rai0 set hw_nat_register=1
 iwpriv rax0 set hw_nat_register=1
+echo 7 1 > /sys/kernel/debug/hnat/hnat_setting
 }
 
 runmode_2(){
