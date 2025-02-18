@@ -25,19 +25,19 @@ stop_statefile() {
 
 runmode_1(){
 export IFACE="eth3"
-nvram set hw_nat_mode=1
-nvram commit
-rmmod hw_nat
-vlanenable="$(nvram get vlan_filter )"
-if [ "$vlanenable" -ne 0 ]; then
-modprobe hw_nat
-else
-modprobe hw_nat
-fi 
-iwpriv ra0 set hw_nat_register=1
-iwpriv rai0 set hw_nat_register=1
-iwpriv rax0 set hw_nat_register=1
-echo 7 1 > /sys/kernel/debug/hnat/hnat_setting
+#nvram set hw_nat_mode=1
+#nvram commit
+#rmmod hw_nat
+#vlanenable="$(nvram get vlan_filter )"
+#if [ "$vlanenable" -ne 0 ]; then
+#modprobe hw_nat
+#else
+#modprobe hw_nat
+#fi 
+#iwpriv ra0 set hw_nat_register=1
+#iwpriv rai0 set hw_nat_register=1
+#iwpriv rax0 set hw_nat_register=1
+#echo 7 1 > /sys/kernel/debug/hnat/hnat_setting
 }
 
 runmode_2(){
