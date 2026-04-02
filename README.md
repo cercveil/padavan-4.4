@@ -72,6 +72,7 @@ This project is based on original rt-n56u with latest mtk 4.4.198 kernel, which 
 
     # (Optional) Modify template file
     # nano configs/templates/K2P.config
+    # 注意，修改.config文件时，确保文件的最后一行为空行，否则会导致build_firmware_modify插入的配置代码不能换行，从而编译报错
 
     # Start compiling
     fakeroot ./build_firmware_modify K2P
