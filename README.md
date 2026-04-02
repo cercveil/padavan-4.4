@@ -95,6 +95,21 @@ This project is based on original rt-n56u with latest mtk 4.4.198 kernel, which 
 ## 1. NAND 存储类型设备挂载 `/opt`
 对于 NAND 存储类型的设备，如何正确挂载 `/opt` 分区，请参考[恩山论坛帖子](https://www.right.com.cn/forum/forum.php?mod=viewthread&tid=8313063&extra=page%3D1&page=1)。
 *(相关备份贴文已放置在仓库的 `自动挂载RWFS文件系统.pdf` 中)*
+### 修复因扩容 rwfs 导致的 OpenWrt 可用空间极小问题
+**问题描述**
+在刷入 OpenWrt / ImmortalWrt 固件后，可能会发现系统的可用空间（`/overlay` 分区）非常小（例如仅剩十多兆），尽管设备本身有 128MB 的物理闪存。
+**原因分析**
+这是因为此前在padavan系统中扩容的 `rwfs` 用户数据分区，在刷写第三方固件后变成了**未挂载的遗留闲置卷**，白白占用了大量空间。
+如果在 SSH 下运行 `ubinfo -a`，通常会看到 117.7 MiB 的逻辑空间被切分成了 3 个卷（我的CR660x路由器是128M闪存，其他路由器的分区分布可能不同）：
+- `rootfs` (Volume 1)：只读系统核心段（约占 6MiB）
+- `rootfs_data` (Volume 2)：当前的可用空间（约占 17MiB）
+- `rwfs` (Volume 0)：原厂遗留闲置卷，罪魁祸首（约占 91MiB）
+**解决办法**
+删除这个毫无用处的 `rwfs` 遗留卷，并在OpenWrt的webui中重新平刷固件重新分配空间即可：
+1. 通过 SSH 登录路由器，执行以下命令强制删除 `rwfs` 卷：
+   ```bash
+   # 注意此处 -n 0 代表删除 Volume ID 为 0 的卷（即 rwfs 所在的编号）
+   ubirmvol /dev/ubi0 -n 0
 ---
 ## 2. 双拨号实现分流（一拨 IPv6，二拨 IPv4）
 > [!TIP]
