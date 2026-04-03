@@ -119,15 +119,17 @@ This project is based on original rt-n56u with latest mtk 4.4.198 kernel, which 
 > 3. **二次拨号 (ppp1)**：使用我们生成的虚拟网卡进行命令行后台拨号，获取独立的 IPv4 地址。通过配置策略路由，确保其具有较高优先级（较低的跃点数），并增加 NAT 转发规则，使局域网的 IPv4 流量主要通过这条高速线路转发。
 > 4. **后台守护**：辅以监控脚本，在断网或路由改变时自动复活连接或恢复路由表，防止系统的默认程序误杀二次拨号进程。
 > 5. 注意，下面的方案不兼容hnat硬件加速，请禁用“硬件 NAT 加速”，打开“shortcut-fe 加速”。237大佬的原生多拨实现说是兼容hnat，不过我还没弄明白它的原理。
+> 6. 因为padavan很多后端是针对ppp0配置的，对双ppp支持不好，因此如果需要两个ppp的v4都能入站，还需要做一些对应调整。
 ### 阶段一：在 WAN 上行/下行启动后执行的脚本
+此段脚本主要负责 ppp0 接口启动后的路由调度，以及解决多 WAN 场景下的非对称路由问题（确保 ppp0 的端口转发及直连流量能够原路返回）。
 在路由器的 **“高级设置 -> 自定义设置 -> 脚本 -> 在 WAN 上行/下行启动后执行”** 中粘贴以下代码：
 ```bash
-# ==== ppp1 自动复活防误杀代码 开始 ====
+# ==== ppp1 自动复活与进程守护 开始 ====
 if [ "$1" == "up" ]; then
     if ! ps | grep -v grep | grep "options.wan1" > /dev/null; then
         WAN_IF="eth3"
         VIRTUAL_WAN="vwan1"
-        FAKE_MAC="d6:35:38:44:77:33" # 改成你想设定的MAC地址
+        FAKE_MAC="d6:35:38:44:77:33" # 请替换为自定义的 MAC 地址
         
         ip link del $VIRTUAL_WAN 2>/dev/null
         ip link add link $WAN_IF name $VIRTUAL_WAN type macvlan 2>/dev/null
@@ -137,49 +139,67 @@ if [ "$1" == "up" ]; then
         pppd file /tmp/ppp/options.wan1
     fi
 fi
-# ==== ppp1 自动复活防误杀代码 结束 ====
-# ==== 路由跃点数 (Metric) 修改与防欺骗对策 ====
+# ==== ppp1 自动复活与进程守护 结束 ====
+
+# ==== 路由跃点数 (Metric) 修改与多 WAN 策略路由配置 ====
 if [ "$1" == "up" ] && [ "$2" == "ppp0" ]; then
-    # 等待3秒，确保系统的 ppp0 路由和 IP 已经完全生成并写入内核
+    # 等待3秒，确保 ppp0 路由和 IP 已完全写入内核
     sleep 3
     
     # ----------------------------------------------------
-    # 魔法 1：修改 ppp0 的默认路由跃点数为 20 (降级为备胎)
+    # 策略 1：修改 ppp0 的默认路由跃点数为 20 (降低出站优先级)
     # ----------------------------------------------------
-    # 先删除系统默认分配的 0 跃点路由
     ip route del default dev ppp0 2>/dev/null
-    # 重新添加跃点数为 20 的路由
     ip route add default dev ppp0 metric 20 2>/dev/null
+
     # ----------------------------------------------------
-    # 魔法 2：解决双拨回程非对称路由的“防欺骗”对策
+    # 策略 2：解决多 WAN 环境下的回程非对称路由问题
     # ----------------------------------------------------
     IP_PPP0=$(ip addr show ppp0 2>/dev/null | grep -w inet | awk '{print $2}')
     if [ -n "$IP_PPP0" ]; then
+        # 清理旧的策略路由规则，防止重复加载
         ip rule del table 100 2>/dev/null
+        ip rule del fwmark 0x100 table 100 2>/dev/null
         ip route flush table 100 2>/dev/null
         
+        # 配置专属路由表 100
         ip rule add from $IP_PPP0 table 100
+        ip rule add fwmark 0x100 table 100
         ip route add default dev ppp0 table 100
+
+        # 清理旧的 mangle 打标规则
+        iptables -t mangle -D PREROUTING -i ppp0 -m conntrack --ctstate NEW -j CONNMARK --set-mark 0x100 2>/dev/null
+        iptables -t mangle -D OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j CONNMARK --restore-mark 2>/dev/null
+        iptables -t mangle -D PREROUTING -m conntrack --ctstate ESTABLISHED,RELATED -j CONNMARK --restore-mark 2>/dev/null
+
+        # 为 ppp0 入站连接打上 0x100 标记，配合 fwmark 规则强制回包走 ppp0
+        iptables -t mangle -A PREROUTING -i ppp0 -m conntrack --ctstate NEW -j CONNMARK --set-mark 0x100
+        iptables -t mangle -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j CONNMARK --restore-mark
+        iptables -t mangle -A PREROUTING -m conntrack --ctstate ESTABLISHED,RELATED -j CONNMARK --restore-mark
     fi
 fi
 # ===============================================
 ```
 ### 阶段二：在路由器启动后执行的脚本
+此段脚本负责初始化第二次拨号，并启动后台守护进程，以维持 ppp1 的 NAT 以及端口转发/UPnP 流量的正常引入。
 在路由器的 **“高级设置 -> 自定义设置 -> 脚本 -> 在路由器启动后执行”** 中粘贴以下代码（请记得替换账号密码）：
 ```bash
-# ==== 第二个拨号（带MAC伪装）的脚本配置 开始 ====
+# ==== 第二拨号（带MAC伪装）的初始化配置 开始 ====
 USER_V4="（填入你的宽带账号）"
 PASS_V4="（填入你的宽带密码）"
+
 # 1. 获取物理 WAN 口名称 (如 eth3)
 WAN_IF="eth3" 
+
 # 2. 创建虚拟网卡(macvlan)并赋予随机伪装MAC
 VIRTUAL_WAN="vwan1"
-FAKE_MAC="d6:35:38:44:77:33" # 记得与上一段脚本中的 MAC 保持一致
+FAKE_MAC="d6:35:38:44:77:33" # 必须与上一段脚本中的 MAC 保持一致
 ip link del $VIRTUAL_WAN 2>/dev/null
 ip link add link $WAN_IF name $VIRTUAL_WAN type macvlan 2>/dev/null
 ip link set $VIRTUAL_WAN address $FAKE_MAC 2>/dev/null
 ip link set $VIRTUAL_WAN up 2>/dev/null
-# 3. 生成拨号配置 (保持 nodefaultroute，不让 pppd 乱加路由，由我们自己管理)
+
+# 3. 生成拨号配置 (保持 nodefaultroute，避免 pppd 干扰系统路由表)
 cat > /tmp/ppp/options.wan1 <<EOF
 plugin rp-pppoe.so nic-$VIRTUAL_WAN
 user "$USER_V4"
@@ -196,21 +216,28 @@ lcp-echo-failure 5
 mtu 1492
 mru 1492
 EOF
+
 # 4. 启动拨号进程
 if ! ps | grep -v grep | grep "options.wan1" > /dev/null; then
     pppd file /tmp/ppp/options.wan1
 fi
-# 5. 启动轻量级后台守护进程（负责 ppp1 的高优先级路由和NAT）
+
+# 5. 启动轻量级后台守护进程（负责 ppp1 的高优先级路由、NAT及端口转发通道）
 (
     sleep 5
     while true; do
-        # 只要 ppp1 在线
+        # 确认 ppp1 接口处于活动状态
         if ip link show ppp1 2>/dev/null | grep -q "UP"; then
-            # 确保 NAT 规则存在
+            
+            # 确保出站 NAT 规则存在
             iptables -t nat -C POSTROUTING -o ppp1 -j MASQUERADE 2>/dev/null || \
             iptables -t nat -A POSTROUTING -o ppp1 -j MASQUERADE
             
-            # 检查 ppp1 的 Metric 10 路由是否存在，不存在则添加
+            # 确保 ppp1 的入站流量能正确进入端口转发链 (修复 ppp1 端口转发与 UPnP 失效问题)
+            iptables -t nat -C PREROUTING -i ppp1 -j vserver 2>/dev/null || \
+            iptables -t nat -A PREROUTING -i ppp1 -j vserver
+            
+            # 检查 ppp1 的主路由是否存在 (Metric 10，保证 IPv4 优先从此接口出站)
             if ! ip route show default dev ppp1 2>/dev/null | grep -q "metric 10"; then
                 ip route add default dev ppp1 metric 10 2>/dev/null
             fi
@@ -218,7 +245,7 @@ fi
         sleep 5
     done
 ) &
-# ==== 第二个拨号（带MAC伪装）的脚本配置 结束 ====
+# ==== 第二拨号（带MAC伪装）的初始化配置 结束 ====
 ```
 ---
 ## 3. 在 Padavan 上部署 Tailscale 内网穿透
