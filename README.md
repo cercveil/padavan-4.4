@@ -393,3 +393,48 @@ fi
    export SSL_CERT_FILE=/opt/etc/cacert.pem
    ```
 将对应方案获取后的 `export` 环境变量语句补到相关程序或启动脚本的首行即可彻底解决问题！
+
+# 7. 开启 TCP MSS 钳制
+> PPPoE 拨号会使链路 MTU 从 1500 降至 1492。如果没有 MSS 钳制，TCP 握手时协商的 MSS 可能超出实际 MTU，导致大包被 IP 层分片，严重时会出现网页打不开、下载卡住等问题。MSS 钳制是 PPPoE 环境下的基本必备配置。
+
+## 原理简述
+MSS 钳制通过 iptables 的 TCPMSS target，在 TCP SYN/SYN-ACK 握手包经过路由器时，将 MSS 值自动压低到当前出口链路的 PMTU 所允许的最大值，从根源上避免 TCP 数据包超过 MTU 而被分片。
+
+## 配置方法
+前往 `高级设置 → 自定义设置 → 脚本 → 在防火墙规则启动后执行`，添加以下规则：
+
+```bash
+# ======== TCP MSS 钳制（IPv4 + IPv6） ========
+# --- IPv4 MSS Clamping ---
+# 对所有经过路由器转发的 TCP SYN 包，将 MSS 钳制到 PMTU 允许的最大值
+iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+# 对路由器自身发出的 TCP SYN 包也做钳制（如路由器自身访问外网）
+iptables -t mangle -A OUTPUT  -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
+# --- IPv6 MSS Clamping ---
+# IPv6 同理，PPPoE 下 IPv6 的 MTU 同样受限
+ip6tables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+ip6tables -t mangle -A OUTPUT  -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+# =============================================
+```
+
+## 验证是否生效
+配置保存并重启防火墙后，通过 SSH 执行：
+
+```bash
+# 查看 IPv4 规则
+iptables -t mangle -L FORWARD -v -n | grep -i tcpmss
+iptables -t mangle -L OUTPUT  -v -n | grep -i tcpmss
+
+# 查看 IPv6 规则
+ip6tables -t mangle -L FORWARD -v -n | grep -i tcpmss
+ip6tables -t mangle -L OUTPUT  -v -n | grep -i tcpmss
+```
+
+### 正常输出示例
+```
+0     0 TCPMSS     tcp  --  *      *       0.0.0.0/0    0.0.0.0/0    tcp flags:0x06/0x02 TCPMSS clamp to PMTU
+```
+
+> **TIP**
+> `--clamp-mss-to-pmtu` 会自动根据出口接口的 MTU 计算最优 MSS 值（MTU - 40 对于 IPv4，MTU - 60 对于 IPv6），无需手动指定数字，即使 MTU 发生变化也能自动适配。
