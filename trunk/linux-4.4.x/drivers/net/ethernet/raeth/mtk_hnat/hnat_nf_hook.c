@@ -624,6 +624,10 @@ static unsigned int is_ppe_support_type(struct sk_buff *skb)
 	case ETH_P_IP:
 		iph = ip_hdr(skb);
 
+		/* do not accelerate fragmented packets */
+		if (ip_is_fragment(iph))
+			return 0;
+
 		/* do not accelerate non tcp/udp traffic */
 		if ((iph->protocol == IPPROTO_TCP) ||
 		    (iph->protocol == IPPROTO_UDP) ||
@@ -1639,6 +1643,10 @@ static unsigned int mtk_hnat_nf_post_routing(
 		return 0;
 		
 	if (unlikely(!skb_hnat_is_hashed(skb)))
+		return 0;
+
+	/* Do not bind fragmented IPv4 packets to PPE */
+	if (skb->protocol == htons(ETH_P_IP) && ip_is_fragment(ip_hdr(skb)))
 		return 0;
 
 	if (out->netdev_ops->ndo_hnat_check) {
