@@ -55,6 +55,8 @@ function initial(){
 			showhide_div("row_80211kv", 1);
 			showhide_div("row_80211r", 1);
 		}
+	if (typeof(support_2g_mumimo) === 'function' && support_2g_mumimo())
+        showhide_div("row_mumimo", 1);
 	}
 
 	if (support_2g_stream_tx()<4) 
@@ -406,6 +408,15 @@ function done_validating(action){
                                                 <select name="rt_turbo_qam" class="input">
                                                     <option value="0" <% nvram_match_x("","rt_turbo_qam", "0","selected"); %>><#btn_Disable#></option>
                                                     <option value="1" <% nvram_match_x("","rt_turbo_qam", "1","selected"); %>><#btn_Enable#> (*)</option>
+                                                </select>
+                                            </td>
+                                        </tr>
+                                        <tr id="row_mumimo" style="display:none">
+                                            <th><#WLANConfig11n_mumimo#></th>
+                                            <td>
+                                                <select name="rt_mumimo" class="input">
+                                                    <option value="0" <% nvram_match_x("","rt_mumimo", "0","selected"); %>><#btn_Disable#> (*)</option>
+                                                    <option value="1" <% nvram_match_x("","rt_mumimo", "1","selected"); %>><#btn_Enable#></option>
                                                 </select>
                                             </td>
                                         </tr>

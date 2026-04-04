@@ -337,6 +337,7 @@ struct nvram_pair router_defaults[] = {
 	{ "rt_HT_80211KV", "1" },
 	{ "rt_HT_80211R", "0" },
 #if defined (USE_WID_2G) && (USE_WID_2G==7615 || USE_WID_2G==7915)
+    { "rt_mumimo", "0" },
 	{ "rt_HT_BAWinSize", "256" },
 	{ "rt_ldpc", "1" },
 	{ "rt_turbo_qam", "1" },
