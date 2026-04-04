@@ -1386,6 +1386,21 @@ gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 		fprintf(fp, "VHT_STBC=%d\n", 0);
 #endif
 	}
+#if defined (BOARD_MT7615_DBDC) || defined (BOARD_MT7915_DBDC)
+	else {
+		/* 2.4GHz in DBDC mode: emit VHT placeholder values to prevent
+		 * multi_profile merge from creating empty entries (e.g. "VHT_BW=;;0;0;").
+		 * The driver's rstrtok() skips empty tokens, which would misalign
+		 * the 5GHz VHT_BW values to 2.4GHz wdevs, leaving 5GHz at default
+		 * VHT_BW_80 regardless of user setting. */
+		fprintf(fp, "VHT_BW=%d\n", 0);
+		fprintf(fp, "VHT_SGI=%d\n", 1);
+		fprintf(fp, "VHT_BW_SIGNAL=%d\n", 0);
+		fprintf(fp, "VHT_DisallowNonVHT=%d\n", 0);
+		fprintf(fp, "VHT_LDPC=%d\n", 0);
+		fprintf(fp, "VHT_STBC=%d\n", 0);
+	}
+#endif
 #endif
 
 	//Wsc
