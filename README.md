@@ -114,92 +114,81 @@ This project is based on original rt-n56u with latest mtk 4.4.198 kernel, which 
 ## 2. 双拨号实现分流（一拨 IPv6，二拨 IPv4）
 > [!TIP]
 > **双拨的基本逻辑：**
-> 1. **虚拟网卡 (macvlan)**：由于物理 WAN 口（如 `eth3`）只能被系统原生拨号占用，我们需要通过 `macvlan` 技术在同一个物理网卡上虚拟出一个带有新 MAC 地址的网卡（`vwan1`），以骗过运营商的限制，允许进行第二次独立拨号。
-> 2. **原生拨号 (ppp0)**：交由 Padavan 传统的 Web 界面接管并正常配置，主要用来获取 IPv6 地址。由于双拨会导致路由冲突，我们会通过脚本将其默认路由的优先级降低（增大跃点数 / Metric），使其仅仅作为备胎或仅用于 IPv6 流量。
-> 3. **二次拨号 (ppp1)**：使用我们生成的虚拟网卡进行命令行后台拨号，获取独立的 IPv4 地址。通过配置策略路由，确保其具有较高优先级（较低的跃点数），并增加 NAT 转发规则，使局域网的 IPv4 流量主要通过这条高速线路转发。
-> 4. **后台守护**：辅以监控脚本，在断网或路由改变时自动复活连接或恢复路由表，防止系统的默认程序误杀二次拨号进程。
-> 5. 注意，下面的方案不兼容hnat硬件加速，请禁用“硬件 NAT 加速”，打开“shortcut-fe 加速”。237大佬的原生多拨实现说是兼容hnat，不过我还没弄明白它的原理。
-> 6. 因为padavan很多后端是针对ppp0配置的，对双ppp支持不好，因此如果需要两个ppp的v4都能入站，还需要做一些对应调整。
+> 1.整这个的原因是我这个学校的校园网，一个免费账号的ipv4限速，ipv6不限速，另一个付费账号ipv4不限速，但是没有ipv6。且这两个账号都能在同一个有线端口上执行拨号。其实openwrt折腾这个最方便，可惜不知道什么原因，官方的op刷入后会经常断流。lean的lede更别说了，那个turboacc插件动了配置，就再也别想开启hnat了。只能选择相对来讲较为稳定的老毛子。
+> 2.  **虚拟网卡 (macvlan)**：由于物理 WAN 口（如 `eth3`）只能被系统原生拨号占用，我们需要通过 `macvlan` 技术在同一个物理网卡上虚拟出一个带有新 MAC 地址的网卡（`vwan1`），以骗过运营商的限制，允许进行第二次独立拨号ppp1。
+> 3. **原生拨号 (ppp0)**：交由 Padavan 传统的 Web 界面接管并正常配置，主要用来获取 IPv6 地址。由于双拨会导致路由冲突，我们会通过脚本将其默认路由的优先级降低（增大跃点数 / Metric），使其仅仅作为备胎或仅用于 IPv6 流量。
+> 4. **二次拨号 (ppp1)**：使用我们生成的虚拟网卡进行命令行后台拨号，获取独立的 IPv4 地址。通过配置策略路由，确保其具有较高优先级（较低的跃点数），并增加 NAT 转发规则，使局域网的 IPv4 流量主要通过这条高速线路转发。
+> 5. **后台守护**：辅以监控脚本，在断网或路由改变时自动复活连接或恢复路由表，防止系统的默认程序误杀二次拨号进程。
+> 6. 下面的方案对硬件加速有有限支持，同等100M流量下cpu占用比单拨要高，但是比不开硬件加速要低一些。个人建议还是禁用hwnat，然后用shortcut-fe加速，hwnat的某些bug简直离谱。或者ppp0负责ipv4，ppp1负责ipv6，然后ppp0正常走hwnat，ppp1因为校园网需要做nat66本来就没有硬件加速，这样的方案比下面的方案简单很多。
+> 7. 因为padavan很多后端是针对ppp0配置的，对双ppp支持不好，因此如果需要两个ppp的v4都能入站，还需要做一些对应调整。
 ### 阶段一：在 WAN 上行/下行启动后执行的脚本
-此段脚本主要负责 ppp0 接口启动后的路由调度，以及解决多 WAN 场景下的非对称路由问题（确保 ppp0 的端口转发及直连流量能够原路返回）。
+padavan在webui手动重连ppp0后会kill掉其他ppp进程，因此需要在这里复活ppp1，并配置两个接口的路由规则。
 在路由器的 **“高级设置 -> 自定义设置 -> 脚本 -> 在 WAN 上行/下行启动后执行”** 中粘贴以下代码：
 ```bash
 # ==== ppp1 自动复活与进程守护 开始 ====
-if [ "$1" == "up" ]; then
-    if ! ps | grep -v grep | grep "options.wan1" > /dev/null; then
-        WAN_IF="eth3"
-        VIRTUAL_WAN="vwan1"
-        FAKE_MAC="d6:35:38:44:77:33" # 请替换为自定义的 MAC 地址
-        
-        ip link del $VIRTUAL_WAN 2>/dev/null
-        ip link add link $WAN_IF name $VIRTUAL_WAN type macvlan 2>/dev/null
-        ip link set $VIRTUAL_WAN address $FAKE_MAC 2>/dev/null
-        ip link set $VIRTUAL_WAN up 2>/dev/null
-        
-        pppd file /tmp/ppp/options.wan1
-    fi
-fi
-# ==== ppp1 自动复活与进程守护 结束 ====
-
-# ==== 路由跃点数 (Metric) 修改与多 WAN 策略路由配置 ====
+# 1. ppp0 上线逻辑：配置降级跃点数与表 100
 if [ "$1" == "up" ] && [ "$2" == "ppp0" ]; then
-    # 等待3秒，确保 ppp0 路由和 IP 已完全写入内核
-    sleep 3
-    
-    # ----------------------------------------------------
-    # 策略 1：修改 ppp0 的默认路由跃点数为 20 (降低出站优先级)
-    # ----------------------------------------------------
     ip route del default dev ppp0 2>/dev/null
     ip route add default dev ppp0 metric 20 2>/dev/null
 
-    # ----------------------------------------------------
-    # 策略 2：解决多 WAN 环境下的回程非对称路由问题
-    # ----------------------------------------------------
     IP_PPP0=$(ip addr show ppp0 2>/dev/null | grep -w inet | awk '{print $2}')
     if [ -n "$IP_PPP0" ]; then
-        # 清理旧的策略路由规则，防止重复加载
-        ip rule del table 100 2>/dev/null
-        ip rule del fwmark 0x100 table 100 2>/dev/null
-        ip route flush table 100 2>/dev/null
-        
-        # 配置专属路由表 100
+        while ip rule show | grep -q "lookup 100"; do
+            ip rule del table 100 2>/dev/null
+        done
         ip rule add from $IP_PPP0 table 100
         ip rule add fwmark 0x100 table 100
-        ip route add default dev ppp0 table 100
-
-        # 清理旧的 mangle 打标规则
-        iptables -t mangle -D PREROUTING -i ppp0 -m conntrack --ctstate NEW -j CONNMARK --set-mark 0x100 2>/dev/null
-        iptables -t mangle -D OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j CONNMARK --restore-mark 2>/dev/null
-        iptables -t mangle -D PREROUTING -m conntrack --ctstate ESTABLISHED,RELATED -j CONNMARK --restore-mark 2>/dev/null
-
-        # 为 ppp0 入站连接打上 0x100 标记，配合 fwmark 规则强制回包走 ppp0
-        iptables -t mangle -A PREROUTING -i ppp0 -m conntrack --ctstate NEW -j CONNMARK --set-mark 0x100
-        iptables -t mangle -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j CONNMARK --restore-mark
-        iptables -t mangle -A PREROUTING -m conntrack --ctstate ESTABLISHED,RELATED -j CONNMARK --restore-mark
+        ip route flush table 100 2>/dev/null
+        ip route add default dev ppp0 table 100 2>/dev/null
+    fi
+    
+    echo 2 > /proc/sys/net/ipv4/conf/ppp0/rp_filter 2>/dev/null
+    
+    if [ -f "/tmp/ppp/options.wan1" ]; then
+        if ! ps | grep -v grep | grep -q "options.wan1"; then
+            logger -t "wan-script" "[信息] 检测到 ppp1 进程不存在，执行初始化拨号..."
+            pppd file /tmp/ppp/options.wan1
+            IP_PPP1=$(ip addr show ppp1 2>/dev/null | grep -w inet | awk '{print $2}')
+            if [ -n "$IP_PPP1" ]; then
+                logger -t "wan-script" "[成功] ppp1 拨号成功 ($IP_PPP1)，配置高优先级路由..."
+        
+                ip route add default dev ppp1 metric 10 2>/dev/null
+        
+                while ip rule show | grep -q "lookup 200"; do
+                    ip rule del table 200 2>/dev/null
+                done
+        
+                ip rule add fwmark 0x200 table 200 2>/dev/null
+                ip rule add from $IP_PPP1 table 200 2>/dev/null
+                ip route flush table 200 2>/dev/null
+                ip route add default dev ppp1 table 200 2>/dev/null
+            fi
+        fi
     fi
 fi
-# ===============================================
+# ==== ppp1 自动复活与进程守护 结束 ====
 ```
 ### 阶段二：在路由器启动后执行的脚本
-此段脚本负责初始化第二次拨号，并启动后台守护进程，以维持 ppp1 的 NAT 以及端口转发/UPnP 流量的正常引入。
+此段脚本负责初始化第二次拨号ppp1，并启动后台守护进程，以维持 ppp1 自己被运营商强制断线重连后的规则配置。
 在路由器的 **“高级设置 -> 自定义设置 -> 脚本 -> 在路由器启动后执行”** 中粘贴以下代码（请记得替换账号密码）：
 ```bash
 # ==== 第二拨号（带MAC伪装）的初始化配置 开始 ====
 USER_V4="（填入你的宽带账号）"
 PASS_V4="（填入你的宽带密码）"
-
-# 1. 获取物理 WAN 口名称 (如 eth3)
-WAN_IF="eth3" 
-
-# 2. 创建虚拟网卡(macvlan)并赋予随机伪装MAC
+WAN_IF="eth3"
 VIRTUAL_WAN="vwan1"
-FAKE_MAC="d6:35:38:44:77:33" # 必须与上一段脚本中的 MAC 保持一致
-ip link del $VIRTUAL_WAN 2>/dev/null
-ip link add link $WAN_IF name $VIRTUAL_WAN type macvlan 2>/dev/null
-ip link set $VIRTUAL_WAN address $FAKE_MAC 2>/dev/null
-ip link set $VIRTUAL_WAN up 2>/dev/null
+FAKE_MAC="d6:35:38:44:77:33"
 
-# 3. 生成拨号配置 (保持 nodefaultroute，避免 pppd 干扰系统路由表)
+# ==== 第二拨号（带MAC伪装）的初始化配置 开始 ====
+# 1. 初始化虚拟网卡
+if ! ip link show $VIRTUAL_WAN > /dev/null 2>&1; then
+    ip link add link $WAN_IF name $VIRTUAL_WAN type macvlan 2>/dev/null
+    ip link set $VIRTUAL_WAN address $FAKE_MAC 2>/dev/null
+    ip link set $VIRTUAL_WAN up 2>/dev/null
+fi
+
+# 2. 生成配置
+mkdir -p /tmp/ppp
 cat > /tmp/ppp/options.wan1 <<EOF
 plugin rp-pppoe.so nic-$VIRTUAL_WAN
 user "$USER_V4"
@@ -209,43 +198,78 @@ noauth
 nodefaultroute
 unit 1
 persist
-holdoff 10
 maxfail 0
+holdoff 10
 lcp-echo-interval 10
 lcp-echo-failure 5
 mtu 1492
 mru 1492
 EOF
 
-# 4. 启动拨号进程
-if ! ps | grep -v grep | grep "options.wan1" > /dev/null; then
+# 3. 初始执行 ppp1 拨号
+if ! ps | grep -v grep | grep -q "options.wan1"; then
     pppd file /tmp/ppp/options.wan1
 fi
 
-# 5. 启动轻量级后台守护进程（负责 ppp1 的高优先级路由、NAT及端口转发通道）
+# 4. 守护程序
 (
-    sleep 5
     while true; do
-        # 确认 ppp1 接口处于活动状态
+        # 如果 ppp1 处于在线状态
         if ip link show ppp1 2>/dev/null | grep -q "UP"; then
-            
-            # 确保出站 NAT 规则存在
-            iptables -t nat -C POSTROUTING -o ppp1 -j MASQUERADE 2>/dev/null || \
-            iptables -t nat -A POSTROUTING -o ppp1 -j MASQUERADE
-            
-            # 确保 ppp1 的入站流量能正确进入端口转发链 (修复 ppp1 端口转发与 UPnP 失效问题)
-            iptables -t nat -C PREROUTING -i ppp1 -j vserver 2>/dev/null || \
-            iptables -t nat -A PREROUTING -i ppp1 -j vserver
-            
-            # 检查 ppp1 的主路由是否存在 (Metric 10，保证 IPv4 优先从此接口出站)
-            if ! ip route show default dev ppp1 2>/dev/null | grep -q "metric 10"; then
-                ip route add default dev ppp1 metric 10 2>/dev/null
+            IP_PPP1=$(ip addr show ppp1 2>/dev/null | grep -w inet | awk '{print $2}')
+            if [ -n "$IP_PPP1" ]; then
+                
+                # 检查默认路由 (metric 10) 是否丢失
+                if ! ip route show default dev ppp1 2>/dev/null | grep -q "metric 10"; then
+                    ip route add default dev ppp1 metric 10 2>/dev/null
+                fi
+                
+                # 检查策略规则 (是否精确指向了当前的 $IP_PPP1)
+                # 如果找不到带有当前 IP 的规则，说明发生过重拨或者规则被意外清空
+                if ! ip rule show | grep -q "from $IP_PPP1 lookup 200"; then
+                    logger -t "ppp1-watchdog" "[修复] ppp1 策略规则失效/遗失，正在重建表 200..."
+                    
+                    while ip rule show | grep -q "lookup 200"; do
+                        ip rule del table 200 2>/dev/null
+                    done
+                    
+                    ip rule add fwmark 0x200 table 200 2>/dev/null
+                    ip rule add from $IP_PPP1 table 200 2>/dev/null
+                    ip route flush table 200 2>/dev/null
+                    ip route add default dev ppp1 table 200 2>/dev/null
+                fi
             fi
         fi
-        sleep 5
+        sleep 15
     done
 ) &
-# ==== 第二拨号（带MAC伪装）的初始化配置 结束 ====
+```
+### 阶段三：配置防火墙规则
+这里主要配置两项，一项是ppp1的nat，方便路由器下级设备上网；另一项是ppp0和ppp1的v4入站连接，主要是方便随时调试路由器。
+```bash
+# 配置双拨nat与入站方案
+# 1. 为 ppp1 增加出站 NAT 伪装 (因为它是手动建立的连接，固件不会自动加)
+iptables -t nat -C POSTROUTING -o ppp1 -j MASQUERADE 2>/dev/null || \
+iptables -t nat -A POSTROUTING -o ppp1 -j MASQUERADE
+
+# 2. 确保 ppp 入站流量进入端口转发/UPnP 链
+iptables -t nat -C PREROUTING -i ppp1 -j vserver 2>/dev/null || \
+iptables -t nat -A PREROUTING -i ppp1 -j vserver
+
+# 1. 进门登记：只要是从 ppp0/ppp1 进来的新连接，在连接表里记下专属标记
+iptables -t mangle -C PREROUTING -i ppp0 -m conntrack --ctstate NEW -j CONNMARK --set-mark 0x100 2>/dev/null || \
+iptables -t mangle -A PREROUTING -i ppp0 -m conntrack --ctstate NEW -j CONNMARK --set-mark 0x100
+
+iptables -t mangle -C PREROUTING -i ppp1 -m conntrack --ctstate NEW -j CONNMARK --set-mark 0x200 2>/dev/null || \
+iptables -t mangle -A PREROUTING -i ppp1 -m conntrack --ctstate NEW -j CONNMARK --set-mark 0x200
+
+# 2. 回包打标 (内网端口转发的回包)：从局域网返回的数据包经过 PREROUTING 时，提取标记
+iptables -t mangle -C PREROUTING -j CONNMARK --restore-mark 2>/dev/null || \
+iptables -t mangle -A PREROUTING -j CONNMARK --restore-mark
+
+# 3. 回包打标 (路由器 WebUI 等本机服务的回包)：从路由器本机会产生的包经过 OUTPUT 时，提取标记
+iptables -t mangle -C OUTPUT -j CONNMARK --restore-mark 2>/dev/null || \
+iptables -t mangle -A OUTPUT -j CONNMARK --restore-mark
 ```
 ---
 ## 3. 在 Padavan 上部署 Tailscale 内网穿透
