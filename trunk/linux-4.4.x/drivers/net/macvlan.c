@@ -33,6 +33,7 @@
 #include <linux/workqueue.h>
 #include <net/rtnetlink.h>
 #include <net/xfrm.h>
+#include <net/netfilter/nf_hnat.h>
 #include <linux/netpoll.h>
 
 #define MACVLAN_HASH_BITS	8
@@ -1011,6 +1012,15 @@ static void macvlan_dev_netpoll_cleanup(struct net_device *dev)
 }
 #endif	/* CONFIG_NET_POLL_CONTROLLER */
 
+static int macvlan_hnat_check(struct hnat_hw_path *path)
+{
+	struct macvlan_dev *vlan = netdev_priv(path->dev);
+	path->dev = vlan->lowerdev;
+	if (path->dev->netdev_ops->ndo_hnat_check)
+		return path->dev->netdev_ops->ndo_hnat_check(path);
+	return 0;
+}
+
 static int macvlan_dev_get_iflink(const struct net_device *dev)
 {
 	struct macvlan_dev *vlan = netdev_priv(dev);
@@ -1050,6 +1060,7 @@ static const struct net_device_ops macvlan_netdev_ops = {
 #endif
 	.ndo_get_iflink		= macvlan_dev_get_iflink,
 	.ndo_features_check	= passthru_features_check,
+	.ndo_hnat_check		= macvlan_hnat_check,
 };
 
 void macvlan_common_setup(struct net_device *dev)
