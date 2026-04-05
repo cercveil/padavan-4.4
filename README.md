@@ -233,13 +233,13 @@ fi
 这里主要配置两项，一项是ppp1的nat，方便路由器下级设备上网；另一项是ppp0和ppp1的v4入站连接，主要是方便随时调试路由器。之前阶段一里面宽容了rp_filter，也是为了ppp0的入站设计的，如果不想宽容，替换那个echo指令为echo 1 > /proc/sys/net/ipv4/conf/ppp0/src_valid_mark也行。
 ```bash
 # 配置双拨nat与入站方案
-# 1. 为 ppp1 配置出站 FullCone NAT
-iptables -t nat -C POSTROUTING -o ppp1 -j FULLCONENAT 2>/dev/null || \
-iptables -t nat -A POSTROUTING -o ppp1 -j FULLCONENAT
+# 为 ppp1 配置基于 MASQUERADE 补丁的 FullCone NAT
+iptables -t nat -C POSTROUTING -o ppp1 -j MASQUERADE --mode fullcone 2>/dev/null || \
+iptables -t nat -A POSTROUTING -o ppp1 -j MASQUERADE --mode fullcone
 
-# 2. 为 ppp1 配置入站 FullCone NAT
-iptables -t nat -C PREROUTING -i ppp1 -j FULLCONENAT 2>/dev/null || \
-iptables -t nat -A PREROUTING -i ppp1 -j FULLCONENAT
+# 2. 确保 ppp 入站流量进入端口转发/UPnP 链
+iptables -t nat -C PREROUTING -i ppp1 -j vserver 2>/dev/null || \
+iptables -t nat -A PREROUTING -i ppp1 -j vserver
 
 # 1. 进门登记：只要是从 ppp0/ppp1 进来的新连接，在连接表里记下专属标记
 iptables -t mangle -C PREROUTING -i ppp0 -m conntrack --ctstate NEW -j CONNMARK --set-mark 0x100 2>/dev/null || \
