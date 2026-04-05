@@ -719,6 +719,16 @@ gen_ralink_config(int is_soc_ap, int is_aband, int disable_autoscan)
 #if defined (USE_WID_2G) && (USE_WID_2G==7615 || USE_WID_2G==7915)
 	if (!is_aband) {
 		fprintf(fp, "G_BAND_256QAM=%d\n", nvram_wlan_get_int(0, "turbo_qam"));
+		/* 2.4g mumimo configs */
+		if (nvram_wlan_get_int(0, "mumimo")) {
+			fprintf(fp, "MUTxRxEnable=%d\n", 1);
+			fprintf(fp, "MuMimoDlEnable=%d\n", 1);
+			fprintf(fp, "MuMimoUlEnable=%d\n", 0);
+		} else {
+			fprintf(fp, "MUTxRxEnable=%d\n", 0);
+			fprintf(fp, "MuMimoDlEnable=%d\n", 0);
+			fprintf(fp, "MuMimoUlEnable=%d\n", 0);
+		}
 #if defined(BOARD_HAS_2G_11AX) && BOARD_HAS_2G_11AX
 		if (i_phy_mode == PHY_11AX_24G) {
 			/* 2.4g wifi6 mode */
