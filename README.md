@@ -318,11 +318,10 @@ mkdir -p /opt/tailscale_state
 在 **在防火墙规则启动后执行 (Run After Firewall Rules Restarted)** 的空白处插入：
 ```bash
 # ======== Tailscale 网络防火墙配置 ========
-iptables -I FORWARD -i tailscale0 -j ACCEPT
-iptables -I FORWARD -o tailscale0 -j ACCEPT
-iptables -t nat -I POSTROUTING -o tailscale0 -j MASQUERADE
+iptables -A INPUT -i tailscale0 -j ACCEPT
+iptables -t nat -A POSTROUTING -o tailscale0 -j MASQUERADE
 # 允许外部访问 41641 用于 P2P 连接
-iptables -I INPUT -p udp --dport 41641 -j ACCEPT
+iptables -A INPUT -p udp --dport 41641 -j ACCEPT
 # ============================================
 ```
 ---
