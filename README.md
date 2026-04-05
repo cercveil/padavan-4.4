@@ -122,7 +122,7 @@ This project is based on original rt-n56u with latest mtk 4.4.198 kernel, which 
 > 6. 下面的方案对硬件加速有有限支持，同等100M流量下cpu占用比单拨要高，但是比不开硬件加速要低一些。个人建议还是禁用hwnat，然后用shortcut-fe加速，hwnat的某些bug简直离谱。或者ppp0负责ipv4，ppp1负责ipv6，然后ppp0正常走hwnat，ppp1因为校园网需要做nat66本来就没有硬件加速，这样的方案比下面的方案简单很多。
 > 7. 因为padavan很多后端是针对ppp0配置的，对双ppp支持不好，因此如果需要两个ppp的v4都能入站，还需要做一些对应调整。
 ### 阶段一：在 WAN 上行/下行启动后执行的脚本
-padavan在webui手动重连ppp0后会kill掉其他ppp进程，因此需要在这里复活ppp1，并配置两个接口的路由规则。
+padavan在webui手动重连ppp0后会kill掉其他ppp进程，因此需要在这里复活ppp1，并配置ppp0接口的路由规则。
 在路由器的 **“高级设置 -> 自定义设置 -> 脚本 -> 在 WAN 上行/下行启动后执行”** 中粘贴以下代码：
 ```bash
 # ==== ppp1 自动复活与进程守护 开始 ====
@@ -146,23 +146,8 @@ if [ "$1" == "up" ] && [ "$2" == "ppp0" ]; then
     
     if [ -f "/tmp/ppp/options.wan1" ]; then
         if ! ps | grep -v grep | grep -q "options.wan1"; then
-            logger -t "wan-script" "[信息] 检测到 ppp1 进程不存在，执行初始化拨号..."
+            logger -t "wan-script" "[信息] 检测到 ppp1 进程不存在，执行拨号..."
             pppd file /tmp/ppp/options.wan1
-            IP_PPP1=$(ip addr show ppp1 2>/dev/null | grep -w inet | awk '{print $2}')
-            if [ -n "$IP_PPP1" ]; then
-                logger -t "wan-script" "[成功] ppp1 拨号成功 ($IP_PPP1)，配置高优先级路由..."
-        
-                ip route add default dev ppp1 metric 10 2>/dev/null
-        
-                while ip rule show | grep -q "lookup 200"; do
-                    ip rule del table 200 2>/dev/null
-                done
-        
-                ip rule add fwmark 0x200 table 200 2>/dev/null
-                ip rule add from $IP_PPP1 table 200 2>/dev/null
-                ip route flush table 200 2>/dev/null
-                ip route add default dev ppp1 table 200 2>/dev/null
-            fi
         fi
     fi
 fi
@@ -179,7 +164,6 @@ WAN_IF="eth3"
 VIRTUAL_WAN="vwan1"
 FAKE_MAC="d6:35:38:44:77:33"
 
-# ==== 第二拨号（带MAC伪装）的初始化配置 开始 ====
 # 1. 初始化虚拟网卡
 if ! ip link show $VIRTUAL_WAN > /dev/null 2>&1; then
     ip link add link $WAN_IF name $VIRTUAL_WAN type macvlan 2>/dev/null
@@ -198,7 +182,7 @@ noauth
 nodefaultroute
 unit 1
 persist
-maxfail 0
+maxfail 3
 holdoff 10
 lcp-echo-interval 10
 lcp-echo-failure 5
@@ -219,13 +203,13 @@ fi
             IP_PPP1=$(ip addr show ppp1 2>/dev/null | grep -w inet | awk '{print $2}')
             if [ -n "$IP_PPP1" ]; then
                 
-                # 检查默认路由 (metric 10) 是否丢失
+                # 检查默认路由 (metric 10) 是否存在
                 if ! ip route show default dev ppp1 2>/dev/null | grep -q "metric 10"; then
                     ip route add default dev ppp1 metric 10 2>/dev/null
                 fi
                 
                 # 检查策略规则 (是否精确指向了当前的 $IP_PPP1)
-                # 如果找不到带有当前 IP 的规则，说明发生过重拨或者规则被意外清空
+                # 如果找不到带有当前 IP 的规则，说明没有发生过第一次拨号，或者重拨，或者规则被意外清空
                 if ! ip rule show | grep -q "from $IP_PPP1 lookup 200"; then
                     logger -t "ppp1-watchdog" "[修复] ppp1 策略规则失效/遗失，正在重建表 200..."
                     
@@ -243,18 +227,19 @@ fi
         sleep 15
     done
 ) &
+# ==== 第二拨号（带MAC伪装）的初始化配置 结束 ====
 ```
 ### 阶段三：配置防火墙规则
 这里主要配置两项，一项是ppp1的nat，方便路由器下级设备上网；另一项是ppp0和ppp1的v4入站连接，主要是方便随时调试路由器。之前阶段一里面宽容了rp_filter，也是为了ppp0的入站设计的，如果不想宽容，替换那个echo指令为echo 1 > /proc/sys/net/ipv4/conf/ppp0/src_valid_mark也行。
 ```bash
 # 配置双拨nat与入站方案
-# 1. 为 ppp1 增加出站 NAT 伪装 (因为它是手动建立的连接，固件不会自动加)
-iptables -t nat -C POSTROUTING -o ppp1 -j MASQUERADE 2>/dev/null || \
-iptables -t nat -A POSTROUTING -o ppp1 -j MASQUERADE
+# 1. 为 ppp1 配置出站 FullCone NAT
+iptables -t nat -C POSTROUTING -o ppp1 -j FULLCONENAT 2>/dev/null || \
+iptables -t nat -A POSTROUTING -o ppp1 -j FULLCONENAT
 
-# 2. 确保 ppp 入站流量进入端口转发/UPnP 链
-iptables -t nat -C PREROUTING -i ppp1 -j vserver 2>/dev/null || \
-iptables -t nat -A PREROUTING -i ppp1 -j vserver
+# 2. 为 ppp1 配置入站 FullCone NAT
+iptables -t nat -C PREROUTING -i ppp1 -j FULLCONENAT 2>/dev/null || \
+iptables -t nat -A PREROUTING -i ppp1 -j FULLCONENAT
 
 # 1. 进门登记：只要是从 ppp0/ppp1 进来的新连接，在连接表里记下专属标记
 iptables -t mangle -C PREROUTING -i ppp0 -m conntrack --ctstate NEW -j CONNMARK --set-mark 0x100 2>/dev/null || \
