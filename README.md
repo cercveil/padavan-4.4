@@ -140,6 +140,11 @@ if [ "$1" == "up" ] && [ "$2" == "ppp0" ]; then
         ip rule add fwmark 0x100 table 100
         ip route flush table 100 2>/dev/null
         ip route add default dev ppp0 table 100 2>/dev/null
+
+        LAN_NET=$(ip route show dev br0 2>/dev/null | grep 'proto kernel' | awk '{print $1}')
+        if [ -n "$LAN_NET" ]; then
+            ip route add $LAN_NET dev br0 table 100 2>/dev/null
+        fi
     fi
     
     echo 2 > /proc/sys/net/ipv4/conf/ppp0/rp_filter 2>/dev/null
@@ -221,6 +226,11 @@ fi
                     ip rule add from $IP_PPP1 table 200 2>/dev/null
                     ip route flush table 200 2>/dev/null
                     ip route add default dev ppp1 table 200 2>/dev/null
+
+                    LAN_NET=$(ip route show dev br0 2>/dev/null | grep 'proto kernel' | awk '{print $1}')
+                    if [ -n "$LAN_NET" ]; then
+                        ip route add $LAN_NET dev br0 table 200 2>/dev/null
+                    fi
                 fi
             fi
         fi
