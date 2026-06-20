@@ -484,3 +484,47 @@ ip6tables -t mangle -L OUTPUT  -v -n | grep -i tcpmss
 
 > **TIP**
 > `--clamp-mss-to-pmtu` 会自动根据出口接口的 MTU 计算最优 MSS 值（MTU - 40 对于 IPv4，MTU - 60 对于 IPv6），无需手动指定数字，即使 MTU 发生变化也能自动适配。
+
+# 8. 优化 Android 设备待机后的 IPv6 RA 保活
+
+> 部分 Android 手机在 Wi-Fi 待机较长时间后，可能会出现 IPv6 地址或默认 IPv6 路由丢失的问题。典型表现是：手机 Wi-Fi 页面仍显示连接正常，但 IPv6 测试失败，`ip -6 route` 中默认路由消失，断开并重新连接 Wi-Fi 后又恢复正常。该问题通常与 Android 设备待机省电、APF 过滤、Wi-Fi 多播接收以及 Router Advertisement（RA）刷新不稳定有关。见：https://issuetracker.google.com/issues/241959699
+
+## 原理简述
+
+IPv6 SLAAC 依赖路由器周期性发送 RA（Router Advertisement）来维持客户端的 IPv6 前缀、默认路由和 DNS 信息。
+在 Wi-Fi 待机场景下，部分 Android 设备可能会因为省电策略漏收多播 RA，导致默认 IPv6 路由的 lifetime 逐渐倒计时归零，最终出现 IPv6 失效。
+
+Padavan 默认配置中，RA lifetime 可能较短。如果手机在待机期间连续漏收 RA，就容易触发该问题。解决思路主要有两个：
+
+1. **提高 RA 默认路由 lifetime**，让手机即使漏收一部分 RA，也不至于很快丢失默认路由；
+2. **调整 DTIM 间隔**，改善 Wi-Fi 待机状态下多播/广播包的接收稳定性。
+
+## 配置方法一：提高 RA 默认路由 Lifetime
+
+前往 `内网LAN → DHCP服务器 → 高级设置 → dnsmasq.conf`，在自定义 `dnsmasq.conf` 中添加：
+
+```conf
+# ======== Android Wi-Fi IPv6 RA 保活优化 ========
+# br0：LAN 桥接口
+# 30：RA 发送间隔，单位秒
+# 9000：Router Lifetime，单位秒，避免 Android 待机漏收 RA 后过快丢默认路由
+ra-param=br0,30,9000
+# ==============================================
+```
+
+配置保存并应用后，重启 dnsmasq 或重启路由器使其生效。
+
+## 配置方法二：调整 DTIM 间隔
+
+前往 `无线 2.4GHz/5GHz → 高级设置`，将对应 Wi-Fi 频段的：
+
+```text
+DTIM 间隔：1 → 5
+```
+
+如果 2.4G 和 5G 都会连接 Android 设备，建议两个频段都改为 `5`。
+
+DTIM 间隔会影响 Wi-Fi 省电设备接收广播/多播包的时机。IPv6 RA 属于多播流量，适当提高 DTIM 间隔有助于改善部分 Android 设备待机后漏收 RA 的问题。
+
+> **TIP**
+> DTIM 并不是越大越好。`5` 是一个相对折中的值：既能改善部分 Android 设备待机状态下的多播接收，又不会让广播/多播流量延迟过高。一般不建议一开始就设置为 10 或更大。
