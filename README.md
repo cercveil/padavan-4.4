@@ -52,6 +52,25 @@ This project is based on original rt-n56u with latest mtk 4.4.198 kernel, which 
         automake gettext gettext-dev autoconf bison \
         flex coreutils cmake git libtool gawk sudo
     ```
+  - Debian 13 编译环境注意事项：`modules.dep` 没有生成
+    ```sh
+    # Debian 13 自带的 kmod/depmod 版本较新，已经不支持旧的 -r 参数。
+    # 如果 tools/depmod.sh 仍然使用下面这种调用方式：
+    #   /sbin/depmod ... -r ${KERNELRELEASE}
+    # depmod 会报 invalid option -- 'r'，导致 romfs/lib/modules/<kernel-version>/
+    # 下没有生成 modules.dep。
+    #
+    # modules.dep 缺失后，固件里的 modprobe 不能按模块名自动加载 .ko，
+    # 例如 iptables -t mangle -L 会因为 iptable_mangle.ko 无法自动加载而报：
+    #   can't initialize iptables table `mangle': Table does not exist
+
+    # 解决方案：修改 tools/depmod.sh，去掉 -r，并让 depmod 失败时中止编译：
+    $depmod_bin -ae -F System.map -b "${INSTALL_MOD_PATH}" ${KERNELRELEASE} || exit $?
+
+    # 重新完整编译后，检查 romfs 里是否已经生成 modules.dep：
+    find romfs/lib/modules -maxdepth 2 -type f -name modules.dep -ls
+    grep iptable_mangle romfs/lib/modules/*/modules.dep
+    ```
   - Clone source code
     ```sh
     git clone https://github.com/meisreallyba/padavan-4.4.git
